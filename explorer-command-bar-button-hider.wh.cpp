@@ -120,24 +120,36 @@ static bool ShouldHideByIcon(const std::wstring& svgUri) {
 // Button processing
 // ============================================================================
 
-static void HideAdjacentSeparator(mux::FrameworkElement hiddenButton) {
-    auto parent = muxm::VisualTreeHelper::GetParent(hiddenButton);
+static void CleanupSeparators(mux::FrameworkElement element) {
+    auto parent = muxm::VisualTreeHelper::GetParent(element);
     if (!parent) return;
-    int childCount = muxm::VisualTreeHelper::GetChildrenCount(parent);
-    int btnIndex = -1;
-    for (int i = 0; i < childCount; i++) {
-        auto child = muxm::VisualTreeHelper::GetChild(parent, i).try_as<mux::UIElement>();
-        if (child && child == hiddenButton.try_as<mux::UIElement>()) { btnIndex = i; break; }
-    }
-    if (btnIndex < 0) return;
-    for (int i = btnIndex - 1; i >= 0; i--) {
-        auto child = muxm::VisualTreeHelper::GetChild(parent, i).try_as<mux::UIElement>();
+    int count = muxm::VisualTreeHelper::GetChildrenCount(parent);
+
+    mux::UIElement lastSep = nullptr;
+    bool seenNonSep = false;
+
+    for (int i = 0; i < count; i++) {
+        auto child = muxm::VisualTreeHelper::GetChild(parent, i)
+                         .try_as<mux::UIElement>();
         if (!child || child.Visibility() != mux::Visibility::Visible) continue;
+
         std::wstring cn(winrt::get_class_name(child));
         if (cn.find(L"AppBarSeparator") != std::wstring::npos) {
-            child.Visibility(mux::Visibility::Collapsed);
+            if (!seenNonSep || lastSep) {
+                // Leading or consecutive separator — collapse it
+                child.Visibility(mux::Visibility::Collapsed);
+            } else {
+                lastSep = child;
+            }
+        } else {
+            lastSep = nullptr;
+            seenNonSep = true;
         }
-        break;
+    }
+
+    // Trailing separator
+    if (lastSep) {
+        lastSep.Visibility(mux::Visibility::Collapsed);
     }
 }
 
@@ -149,14 +161,14 @@ static void ReHideCallback(mux::DependencyObject const& sender, mux::DependencyP
     if (ShouldHideByIcon(uri)) {
         Wh_Log(L"Re-hiding: %s", uri.c_str());
         el.Visibility(mux::Visibility::Collapsed);
-        HideAdjacentSeparator(el);
+        CleanupSeparators(el);
     }
 }
 
 static void HideButton(mux::FrameworkElement fe, const std::wstring& reason) {
     Wh_Log(L"Hiding button: %s", reason.c_str());
     fe.Visibility(mux::Visibility::Collapsed);
-    HideAdjacentSeparator(fe);
+    CleanupSeparators(fe);
     fe.RegisterPropertyChangedCallback(mux::UIElement::VisibilityProperty(), ReHideCallback);
 }
 
@@ -184,7 +196,7 @@ static void ProcessAppBarButton(mux::FrameworkElement element) {
                 if (ShouldHideByIcon(uri)) {
                     Wh_Log(L"Deferred hiding: %s", uri.c_str());
                     fe.Visibility(mux::Visibility::Collapsed);
-                    HideAdjacentSeparator(fe);
+                    CleanupSeparators(fe);
                     fe.RegisterPropertyChangedCallback(
                         mux::UIElement::VisibilityProperty(), ReHideCallback);
                     return;
@@ -200,7 +212,7 @@ static void ProcessAppBarButton(mux::FrameworkElement element) {
                         if (ShouldHideByIcon(u)) {
                             Wh_Log(L"Layout-deferred hide: %s", u.c_str());
                             refFe.Visibility(mux::Visibility::Collapsed);
-                            HideAdjacentSeparator(refFe);
+                            CleanupSeparators(refFe);
                         }
                     });
                 }
@@ -300,7 +312,17 @@ HRESULT VisualTreeWatcher::OnVisualTreeChange(
         return S_OK;
     }
 
-    // Strategy 2: TextLabel added — walk up to find AppBarButton
+    // Strategy 2: AppBarSeparator added — clean up orphaned separators
+    if (typeName.find(L"AppBarSeparator") != std::wstring_view::npos) {
+        try {
+            auto obj = FromHandle(element.Handle);
+            auto fe = obj.try_as<mux::FrameworkElement>();
+            if (fe) CleanupSeparators(fe);
+        } catch (...) {}
+        return S_OK;
+    }
+
+    // Strategy 3: TextLabel added — walk up to find AppBarButton
     std::wstring_view elName(element.Name ? element.Name : L"");
     if (elName == L"TextLabel" && typeName.find(L"TextBlock") != std::wstring_view::npos) {
         try {
