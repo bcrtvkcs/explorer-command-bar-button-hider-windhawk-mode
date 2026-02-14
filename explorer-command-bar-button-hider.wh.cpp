@@ -39,11 +39,6 @@ icon's SVG URI to identify rotate/wallpaper buttons, and hides them.
 - hideSetAsDesktopBackground: true
   $name: Hide Set as Desktop Background button
   $description: Hides the set as desktop background button from the command bar
-- customLabels:
-  - - label: ""
-      $name: Button label text
-  $name: Custom labels to hide
-  $description: Add additional button labels to hide by their visible text (exact match, case-insensitive)
 */
 // ==/WindhawkModSettings==
 
@@ -75,7 +70,6 @@ struct {
     bool hideRotateLeft;
     bool hideRotateRight;
     bool hideSetAsDesktopBackground;
-    std::vector<std::wstring> customLabels;
 } g_settings;
 
 namespace mux = winrt::Microsoft::UI::Xaml;
@@ -89,7 +83,7 @@ static const wchar_t* ICON_ROTATE_RIGHT = L"windows.rotate90.svg";
 static const wchar_t* ICON_WALLPAPER = L"windows.setdesktopwallpaper.svg";
 
 // ============================================================================
-// Icon and label matching
+// Icon matching
 // ============================================================================
 
 static std::wstring GetButtonSvgUri(mux::FrameworkElement element) {
@@ -122,45 +116,6 @@ static bool ShouldHideByIcon(const std::wstring& svgUri) {
     return false;
 }
 
-static bool ShouldHideByLabel(const std::wstring& labelText) {
-    if (labelText.empty()) return false;
-    for (const auto& custom : g_settings.customLabels) {
-        if (_wcsicmp(labelText.c_str(), custom.c_str()) == 0) return true;
-    }
-    return false;
-}
-
-// ============================================================================
-// Visual tree helpers
-// ============================================================================
-
-static mux::FrameworkElement FindChildByName(mux::DependencyObject parent, const winrt::hstring& name) {
-    if (!parent) return nullptr;
-    int count = muxm::VisualTreeHelper::GetChildrenCount(parent);
-    for (int i = 0; i < count; i++) {
-        auto child = muxm::VisualTreeHelper::GetChild(parent, i);
-        auto fe = child.try_as<mux::FrameworkElement>();
-        if (fe && fe.Name() == name) return fe;
-        auto result = FindChildByName(child, name);
-        if (result) return result;
-    }
-    return nullptr;
-}
-
-static std::wstring GetAppBarButtonLabelText(mux::FrameworkElement element) {
-    auto textLabel = FindChildByName(element, L"TextLabel");
-    if (textLabel) {
-        auto tb = textLabel.try_as<muxc::TextBlock>();
-        if (tb) return std::wstring(tb.Text());
-    }
-    auto abb = element.try_as<muxc::AppBarButton>();
-    if (abb) {
-        winrt::hstring label = abb.Label();
-        if (!label.empty()) return std::wstring(label);
-    }
-    return L"";
-}
-
 // ============================================================================
 // Button processing
 // ============================================================================
@@ -191,9 +146,8 @@ static void ReHideCallback(mux::DependencyObject const& sender, mux::DependencyP
     auto el = sender.try_as<mux::FrameworkElement>();
     if (!el || el.Visibility() == mux::Visibility::Collapsed) return;
     std::wstring uri = GetButtonSvgUri(el);
-    std::wstring label = GetAppBarButtonLabelText(el);
-    if (ShouldHideByIcon(uri) || ShouldHideByLabel(label)) {
-        Wh_Log(L"Re-hiding: %s", label.c_str());
+    if (ShouldHideByIcon(uri)) {
+        Wh_Log(L"Re-hiding: %s", uri.c_str());
         el.Visibility(mux::Visibility::Collapsed);
         HideAdjacentSeparator(el);
     }
@@ -209,20 +163,15 @@ static void HideButton(mux::FrameworkElement fe, const std::wstring& reason) {
 static void ProcessAppBarButton(mux::FrameworkElement element) {
     if (!element) return;
 
-    std::wstring labelText = GetAppBarButtonLabelText(element);
     std::wstring svgUri = GetButtonSvgUri(element);
 
     if (ShouldHideByIcon(svgUri)) {
-        HideButton(element, labelText.empty() ? svgUri : labelText);
-        return;
-    }
-    if (!labelText.empty() && ShouldHideByLabel(labelText)) {
-        HideButton(element, labelText);
+        HideButton(element, svgUri);
         return;
     }
 
-    // If both empty, register visibility callback for deferred check
-    if (labelText.empty() && svgUri.empty()) {
+    // Icon not loaded yet — register visibility callback for deferred check
+    if (svgUri.empty()) {
         element.RegisterPropertyChangedCallback(
             mux::UIElement::VisibilityProperty(),
             [](mux::DependencyObject const& sender, mux::DependencyProperty const&) {
@@ -231,11 +180,9 @@ static void ProcessAppBarButton(mux::FrameworkElement element) {
                 if (!fe || fe.Visibility() != mux::Visibility::Visible) return;
 
                 std::wstring uri = GetButtonSvgUri(fe);
-                std::wstring label = GetAppBarButtonLabelText(fe);
 
-                if (ShouldHideByIcon(uri) || ShouldHideByLabel(label)) {
-                    Wh_Log(L"Deferred hiding: %s",
-                        label.empty() ? uri.c_str() : label.c_str());
+                if (ShouldHideByIcon(uri)) {
+                    Wh_Log(L"Deferred hiding: %s", uri.c_str());
                     fe.Visibility(mux::Visibility::Collapsed);
                     HideAdjacentSeparator(fe);
                     fe.RegisterPropertyChangedCallback(
@@ -243,17 +190,15 @@ static void ProcessAppBarButton(mux::FrameworkElement element) {
                     return;
                 }
 
-                if (uri.empty() && label.empty()) {
+                if (uri.empty()) {
                     auto refFe = fe;
                     fe.DispatcherQueue().TryEnqueue(
                         winrt::Microsoft::UI::Dispatching::DispatcherQueuePriority::Low,
                         [refFe]() {
                         if (g_disabled) return;
                         std::wstring u = GetButtonSvgUri(refFe);
-                        std::wstring l = GetAppBarButtonLabelText(refFe);
-                        if (ShouldHideByIcon(u) || ShouldHideByLabel(l)) {
-                            Wh_Log(L"Layout-deferred hide: %s",
-                                l.empty() ? u.c_str() : l.c_str());
+                        if (ShouldHideByIcon(u)) {
+                            Wh_Log(L"Layout-deferred hide: %s", u.c_str());
                             refFe.Visibility(mux::Visibility::Collapsed);
                             HideAdjacentSeparator(refFe);
                         }
@@ -473,8 +418,6 @@ _Use_decl_annotations_ STDAPI DllCanUnloadNow(void) {
 
 using PFN_INITIALIZE_XAML_DIAGNOSTICS_EX = decltype(&InitializeXamlDiagnosticsEx);
 
-bool g_inInjectWindhawkTAP = false;
-
 HRESULT InjectWindhawkTAP() noexcept {
     HMODULE module = GetCurrentModuleHandle();
     if (!module) return HRESULT_FROM_WIN32(GetLastError());
@@ -495,8 +438,6 @@ HRESULT InjectWindhawkTAP() noexcept {
     if (!ixde) [[unlikely]] return HRESULT_FROM_WIN32(GetLastError());
 
     // Try multiple connection names until one works
-    g_inInjectWindhawkTAP = true;
-
     HRESULT hr;
     for (int i = 0; i < 10000; i++) {
         WCHAR connectionName[256];
@@ -507,8 +448,6 @@ HRESULT InjectWindhawkTAP() noexcept {
             break;
         }
     }
-
-    g_inInjectWindhawkTAP = false;
 
     return hr;
 }
@@ -569,19 +508,9 @@ void LoadSettings() {
     g_settings.hideRotateRight = Wh_GetIntSetting(L"hideRotateRight");
     g_settings.hideSetAsDesktopBackground = Wh_GetIntSetting(L"hideSetAsDesktopBackground");
 
-    g_settings.customLabels.clear();
-    for (int i = 0; ; i++) {
-        WCHAR name[256];
-        swprintf_s(name, L"customLabels[%d].label", i);
-        PCWSTR val = Wh_GetStringSetting(name);
-        if (!val || !*val) { Wh_FreeStringSetting(val); break; }
-        g_settings.customLabels.push_back(val);
-        Wh_FreeStringSetting(val);
-    }
-
-    Wh_Log(L"Settings: RotateLeft=%d RotateRight=%d Wallpaper=%d Custom=%zu",
+    Wh_Log(L"Settings: RotateLeft=%d RotateRight=%d Wallpaper=%d",
             g_settings.hideRotateLeft, g_settings.hideRotateRight,
-            g_settings.hideSetAsDesktopBackground, g_settings.customLabels.size());
+            g_settings.hideSetAsDesktopBackground);
 }
 
 // ============================================================================
